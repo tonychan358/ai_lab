@@ -48,7 +48,6 @@
 
         video {
             position: absolute;
-            transform: scaleX(-1);
             width: 100%;
             height: 100%;
             object-fit: cover;
@@ -56,13 +55,13 @@
             pointer-events: none;
         }
 
+        /* 鏡射統一由 JS 控制（canvasCtx），唔再喺 CSS 翻轉，避免雙重翻轉混亂 */
         canvas {
             position: absolute;
             top: 0;
             left: 0;
             width: 100%;
             height: 100%;
-            transform: scaleX(-1);
         }
 
         /* 遊戲層唔鏡像（文字/數字唔會反） */
@@ -267,11 +266,14 @@
                 <!-- 右側控制 -->
                 <div class="flex flex-col items-end gap-2">
                     <div class="flex gap-2">
+                        <button id="mirror-btn" class="btn text-sm py-1 px-3 bg-slate-700 border-slate-500" onclick="toggleMirror()" title="左右鏡射">
+                            <span id="mirror-icon">🪞</span>
+                        </button>
                         <button id="mute-btn" class="btn text-sm py-1 px-3 bg-slate-700 border-slate-500" onclick="toggleMute()">
                             <span id="mute-icon">🔊</span>
                         </button>
-                        <button id="lang-btn" class="btn text-sm py-1 px-3 bg-slate-700 border-slate-500" onclick="toggleLanguage()">
-                            🌐 中/En
+                        <button id="lang-btn" class="btn text-sm py-1 px-3 bg-slate-700 border-slate-500" onclick="toggleLanguage()" title="切換中／English">
+                            🌍 <span id="lang-label">中</span>
                         </button>
                     </div>
 
@@ -558,6 +560,7 @@
         let faceLandmarker, handLandmarker, drawingUtils;
         let runningMode = "VIDEO", lastVideoTime = -1;
         let currentMode = 'mesh';
+        let mirrored = localStorage.getItem('aifacelab_mirror') !== '0'; // 預設鏡射(selfie)
         let currentBlendshapes = {}, landmarksData = null;
         let isIntroOpen = false;
         let handModelLoading = false;
@@ -722,6 +725,7 @@
             set('lb-title', 'lb_title'); set('btn-lb-replay', 'lb_replay'); set('btn-lb-close', 'lb_close');
             playerNameInput.placeholder = getText('name_placeholder');
             nameHint.innerText = getText('name_required');
+            document.getElementById('lang-label').innerText = currentLang === 'zh' ? '中' : 'EN';
         }
 
         function resizeCanvas() {
@@ -755,8 +759,7 @@
                     gameCtx.clearRect(0, 0, gameCanvas.width, gameCanvas.height);
 
                     canvasCtx.save();
-                    canvasCtx.translate(canvasElement.width, 0);
-                    canvasCtx.scale(-1, 1);
+                    if (mirrored) { canvasCtx.translate(canvasElement.width, 0); canvasCtx.scale(-1, 1); }
 
                     if (isHandMode(currentMode)) {
                         if (currentMode === 'handmesh') canvasCtx.filter = 'grayscale(70%) brightness(60%)';
@@ -990,7 +993,7 @@
         }
         function spawnBurst(lm) {
             const W = gameCanvas.width, H = gameCanvas.height;
-            const ox = (1 - lm[10].x) * W, oy = lm[10].y * H; // game-canvas 唔鏡像，要用 1-x
+            const ox = (mirrored ? (1 - lm[10].x) : lm[10].x) * W, oy = lm[10].y * H; // game-canvas 唔翻轉，按鏡射狀態換算
             for (let i = 0; i < 24; i++) {
                 const a = Math.random() * Math.PI * 2, sp = Math.random() * 9 + 4;
                 bursts.push({ x: ox, y: oy, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - 4, life: 1, color: `hsl(${Math.random() * 360},100%,60%)`, r: Math.random() * 6 + 3 });
@@ -1284,6 +1287,12 @@
             }
         }
 
+        window.toggleMirror = () => {
+            mirrored = !mirrored;
+            localStorage.setItem('aifacelab_mirror', mirrored ? '1' : '0');
+            document.getElementById('mirror-btn').classList.toggle('active', mirrored);
+        };
+
         window.toggleMute = () => {
             SoundEngine.muted = !SoundEngine.muted;
             localStorage.setItem('aifacelab_muted', SoundEngine.muted ? '1' : '0');
@@ -1299,7 +1308,7 @@
             const cap = document.createElement('canvas');
             cap.width = canvasElement.width; cap.height = canvasElement.height;
             const ctx = cap.getContext('2d');
-            ctx.save(); ctx.translate(cap.width, 0); ctx.scale(-1, 1); ctx.drawImage(canvasElement, 0, 0); ctx.restore();
+            ctx.drawImage(canvasElement, 0, 0); // 已是顯示方向（鏡射與否都正確）
             ctx.drawImage(gameCanvas, 0, 0);
             const link = document.createElement('a');
             link.download = `ai-face-lab-${Date.now()}.png`; link.href = cap.toDataURL('image/png'); link.click();
@@ -1308,6 +1317,7 @@
         // ========== 啟動 ==========
         SoundEngine.muted = localStorage.getItem('aifacelab_muted') === '1';
         document.getElementById('mute-icon').innerText = SoundEngine.muted ? '🔇' : '🔊';
+        document.getElementById('mirror-btn').classList.toggle('active', mirrored);
         createFaceLandmarker();
     </script>
 </body>
