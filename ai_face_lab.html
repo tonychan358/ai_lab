@@ -1,0 +1,1314 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>陳恩鴻老師AI小教室 - 人臉/手部識別篇</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
+
+    <script>
+        // 隱藏 TF Lite 例行 info（唔影響真正錯誤）
+        const originalConsoleError = console.error;
+        console.error = function(...args) {
+            const msg = args.join(' ');
+            if (msg.includes('TensorFlow Lite XNNPACK delegate for CPU') || msg.includes('INFO: Created TensorFlow Lite')) {
+                return;
+            }
+            originalConsoleError.apply(console, args);
+        };
+    </script>
+
+    <style>
+        body {
+            font-family: 'Segoe UI', 'Microsoft JhengHei', sans-serif;
+            background-color: #000;
+            color: white;
+            overflow: hidden;
+            user-select: none;
+            margin: 0;
+            padding: 0;
+        }
+
+        #canvas-wrapper {
+            position: relative;
+            width: 100vw;
+            height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            background-color: #000;
+            overflow: hidden;
+        }
+
+        #canvas-container {
+            position: relative;
+            box-shadow: 0 0 50px rgba(0,0,0,0.5);
+        }
+
+        video {
+            position: absolute;
+            transform: scaleX(-1);
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+            opacity: 0;
+            pointer-events: none;
+        }
+
+        canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            transform: scaleX(-1);
+        }
+
+        /* 遊戲層唔鏡像（文字/數字唔會反） */
+        #game-canvas {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            transform: scaleX(1);
+            z-index: 20;
+        }
+
+        .bar-container { margin-bottom: 6px; }
+        .bar-label { display: flex; justify-content: space-between; font-size: 0.75rem; color: #94a3b8; }
+        .bar-bg { height: 6px; background: #334155; border-radius: 4px; overflow: hidden; }
+        .bar-fill { height: 100%; background: #3b82f6; width: 0%; transition: width 0.1s linear; }
+
+        #ui-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none;
+            z-index: 30;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            padding: 20px;
+        }
+
+        .panel {
+            background: rgba(15, 23, 42, 0.8);
+            backdrop-filter: blur(8px);
+            border: 1px solid rgba(255,255,255,0.1);
+            border-radius: 12px;
+            padding: 16px;
+            pointer-events: auto;
+            transition: all 0.3s;
+        }
+
+        .btn {
+            background: #334155;
+            padding: 10px 20px;
+            border-radius: 10px;
+            transition: all 0.2s;
+            cursor: pointer;
+            border: 1px solid transparent;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-weight: 500;
+            pointer-events: auto;
+        }
+        .btn:hover { background: #475569; transform: translateY(-2px); }
+        .btn.active { background: #2563eb; color: white; border-color: #60a5fa; box-shadow: 0 0 15px rgba(37, 99, 235, 0.5); }
+
+        .loader {
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #3b82f6;
+            border-radius: 50%;
+            width: 24px;
+            height: 24px;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+
+        .score-pop { animation: pop 0.3s cubic-bezier(0.175, 0.885, 0.32, 1.275); }
+        @keyframes pop {
+            0% { transform: scale(1); }
+            50% { transform: scale(1.5); color: #fbbf24; }
+            100% { transform: scale(1); }
+        }
+
+        @keyframes flash {
+            0% { opacity: 0; }
+            50% { opacity: 1; background: white; }
+            100% { opacity: 0; }
+        }
+        #flash-overlay {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            pointer-events: none; z-index: 100;
+        }
+
+        .modal-enter { animation: modalIn 0.3s ease-out forwards; }
+        @keyframes modalIn {
+            from { opacity: 0; transform: scale(0.9); }
+            to { opacity: 1; transform: scale(1); }
+        }
+
+        /* 校徽 logo */
+        #logo-bar { display: flex; align-items: center; gap: 10px; }
+        #logo-bar img {
+            height: 52px; width: auto; object-fit: contain;
+            background: rgba(255,255,255,0.92);
+            border-radius: 10px; padding: 4px;
+        }
+
+        /* 開場 3-2-1 倒數 */
+        #countdown-overlay {
+            position: absolute; top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            font-size: 9rem; font-weight: 900;
+            color: #fbbf24; text-shadow: 0 0 30px rgba(0,0,0,0.8);
+            z-index: 35; pointer-events: none;
+        }
+        .cd-anim { animation: cdpop 0.6s ease-out; }
+        @keyframes cdpop {
+            0% { transform: translate(-50%, -50%) scale(2.2); opacity: 0; }
+            40% { transform: translate(-50%, -50%) scale(1); opacity: 1; }
+            100% { transform: translate(-50%, -50%) scale(1); opacity: 0.9; }
+        }
+
+        /* 目標表情大 emoji */
+        #big-emoji {
+            font-size: 6rem; line-height: 1;
+            filter: drop-shadow(0 4px 12px rgba(0,0,0,0.6));
+            animation: bob 1.2s ease-in-out infinite;
+        }
+        @keyframes bob { 0%,100% { transform: translateY(0); } 50% { transform: translateY(-10px); } }
+
+        .timer-danger { color: #f87171 !important; animation: tick 1s steps(1) infinite; }
+        @keyframes tick { 50% { opacity: 0.4; } }
+
+        .prop-btn { padding: 6px 12px; font-size: 0.8rem; }
+        .lb-row { display: flex; justify-content: space-between; align-items: center; padding: 8px 12px; border-radius: 8px; margin-bottom: 4px; background: rgba(255,255,255,0.04); }
+        .lb-row.me { background: rgba(37,99,235,0.35); border: 1px solid #60a5fa; }
+    </style>
+</head>
+<body>
+
+    <div id="flash-overlay"></div>
+
+    <!-- 載入畫面 -->
+    <div id="loading-overlay" class="fixed inset-0 bg-slate-900 z-50 flex flex-col items-center justify-center text-center p-4">
+        <div class="loader mb-4" style="width: 50px; height: 50px;"></div>
+        <h2 id="txt-loading-title" class="text-xl font-bold text-blue-400">正在啟動 AI 引擎...</h2>
+        <p id="txt-loading-desc" class="text-gray-400 text-sm mt-2">請允許攝影機權限</p>
+    </div>
+
+    <!-- 模式開場 modal -->
+    <div id="intro-modal" class="hidden fixed inset-0 bg-black/80 z-40 flex items-center justify-center p-4">
+        <div class="bg-slate-800 p-8 rounded-2xl max-w-md w-full border border-blue-500 text-center shadow-2xl modal-enter pointer-events-auto">
+            <div class="text-6xl mb-4" id="intro-icon">👋</div>
+            <h3 id="intro-title" class="text-2xl font-bold text-blue-400 mb-2">模式標題</h3>
+            <p id="intro-desc" class="text-gray-300 mb-6 text-lg leading-relaxed">模式說明文字</p>
+            <div id="intro-name-wrap" class="hidden mb-6">
+                <input id="player-name" maxlength="12" placeholder="輸入你的名字"
+                    class="w-full text-center text-lg px-4 py-3 rounded-xl bg-slate-900 border border-slate-600 text-white focus:border-blue-400 focus:outline-none" />
+                <p id="name-hint" class="text-red-400 text-sm mt-2 hidden">請先輸入名字</p>
+            </div>
+            <button id="btn-start-intro" onclick="closeIntro()" class="btn bg-blue-600 hover:bg-blue-500 w-full justify-center py-3 text-lg font-bold shadow-lg">
+                開始體驗
+            </button>
+        </div>
+    </div>
+
+    <!-- 排行榜 modal -->
+    <div id="leaderboard-modal" class="hidden fixed inset-0 bg-black/80 z-40 flex items-center justify-center p-4">
+        <div class="bg-slate-800 p-8 rounded-2xl max-w-md w-full border border-yellow-500 shadow-2xl modal-enter pointer-events-auto">
+            <h3 id="lb-title" class="text-2xl font-bold text-yellow-400 mb-1 text-center">🏆 排行榜</h3>
+            <p id="lb-myscore" class="text-center text-gray-300 mb-4"></p>
+            <div id="lb-list" class="max-h-80 overflow-y-auto mb-6"></div>
+            <div class="flex gap-3">
+                <button id="btn-lb-replay" onclick="lbReplay()" class="btn bg-blue-600 hover:bg-blue-500 flex-1 justify-center py-3 font-bold">再玩一次</button>
+                <button id="btn-lb-close" onclick="lbClose()" class="btn flex-1 justify-center py-3">關閉</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="canvas-wrapper">
+        <video id="webcam" autoplay playsinline muted></video>
+        <div id="canvas-container">
+            <canvas id="output_canvas"></canvas>
+            <canvas id="game-canvas"></canvas>
+        </div>
+
+        <!-- 倒數 / 大 emoji 疊在中央 -->
+        <div id="countdown-overlay" class="hidden">3</div>
+
+        <div id="ui-layer">
+            <!-- 頂部列 -->
+            <div class="flex justify-between items-start w-full">
+                <div class="panel w-auto pr-6 flex items-center gap-3">
+                    <!-- 雙校徽 logo（搵唔到檔案會自動隱藏） -->
+                    <div id="logo-bar">
+                        <img src="assets/logo1.png" alt="school 1" onerror="this.style.display='none'">
+                        <img src="assets/logo2.png" alt="school 2" onerror="this.style.display='none'">
+                    </div>
+                    <div class="flex flex-col justify-center">
+                        <h1 id="main-title" class="text-xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-blue-400 to-purple-400">
+                            陳恩鴻老師AI小教室
+                        </h1>
+                        <div id="status-text" class="text-xs text-green-400 mt-1 flex items-center gap-2">
+                            <span class="w-2 h-2 rounded-full bg-green-500"></span> <span id="txt-status">偵測中</span>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 右側控制 -->
+                <div class="flex flex-col items-end gap-2">
+                    <div class="flex gap-2">
+                        <button id="mute-btn" class="btn text-sm py-1 px-3 bg-slate-700 border-slate-500" onclick="toggleMute()">
+                            <span id="mute-icon">🔊</span>
+                        </button>
+                        <button id="lang-btn" class="btn text-sm py-1 px-3 bg-slate-700 border-slate-500" onclick="toggleLanguage()">
+                            🌐 中/En
+                        </button>
+                    </div>
+
+                    <!-- 計時 chip -->
+                    <div id="timer-chip" class="panel hidden py-2 px-4 text-center">
+                        <p class="text-[10px] text-gray-400 uppercase tracking-wider" id="txt-time">Time</p>
+                        <p id="timer-display" class="text-3xl font-black text-green-400 font-mono">60</p>
+                    </div>
+
+                    <!-- 分數 chip -->
+                    <div id="score-panel" class="panel hidden py-2 px-4">
+                        <div class="text-center">
+                            <p class="text-[10px] text-gray-400 uppercase tracking-wider" id="txt-score">Score</p>
+                            <p id="score-display" class="text-3xl font-black text-yellow-400 font-mono">0</p>
+                        </div>
+                    </div>
+
+                    <!-- combo chip -->
+                    <div id="combo-chip" class="panel hidden py-1 px-4 text-center">
+                        <p class="text-lg font-black text-orange-400">Combo ×<span id="combo-val">1</span></p>
+                    </div>
+
+                    <!-- AR 道具切換 -->
+                    <div id="ar-bar" class="panel hidden">
+                        <p class="text-[10px] text-gray-400 uppercase tracking-wide mb-2" id="txt-arprop">AR 道具</p>
+                        <div class="flex gap-2 flex-wrap">
+                            <button class="btn prop-btn" data-prop="none" onclick="setArProp('none')"><span id="ar-none">無</span></button>
+                            <button class="btn prop-btn" data-prop="glasses" onclick="setArProp('glasses')"><span id="ar-glasses">墨鏡</span></button>
+                            <button class="btn prop-btn" data-prop="bunny" onclick="setArProp('bunny')"><span id="ar-bunny">兔耳</span></button>
+                            <button class="btn prop-btn" data-prop="hat" onclick="setArProp('hat')"><span id="ar-hat">帽</span></button>
+                        </div>
+                    </div>
+
+                    <!-- 數據 -->
+                    <button id="data-toggle-btn" class="btn text-sm py-1 px-3 hidden" onclick="toggleDataPanel()">
+                        <span class="material-icons text-sm">bar_chart</span> <span id="txt-show-data">顯示數據</span>
+                    </button>
+                    <div id="data-panel" class="panel w-64 hidden">
+                        <div class="flex justify-between items-center mb-2">
+                            <h3 id="txt-data-title" class="text-sm font-bold text-gray-300">Blendshapes 數據</h3>
+                            <button onclick="toggleDataPanel()" class="text-gray-500 hover:text-white"><span class="material-icons text-sm">close</span></button>
+                        </div>
+                        <div class="mb-4 bg-slate-900/50 rounded-lg p-2 text-center border border-slate-700">
+                            <p id="txt-system-judge" class="text-[10px] text-gray-400 uppercase tracking-wide mb-1">系統判定</p>
+                            <p id="expression-status" class="text-lg font-bold text-gray-400">無表情</p>
+                        </div>
+                        <div class="bar-container"><div class="bar-label"><span id="lbl-jaw">張嘴 (JawOpen)</span><span id="val-jaw">0.0</span></div><div class="bar-bg"><div id="bar-jaw" class="bar-fill bg-red-500"></div></div></div>
+                        <div class="bar-container"><div class="bar-label"><span id="lbl-smile">微笑 (Smile)</span><span id="val-smile">0.0</span></div><div class="bar-bg"><div id="bar-smile" class="bar-fill bg-yellow-500"></div></div></div>
+                        <div class="bar-container"><div class="bar-label"><span id="lbl-brow">皺眉 (BrowDown)</span><span id="val-brow">0.0</span></div><div class="bar-bg"><div id="bar-brow" class="bar-fill bg-purple-500"></div></div></div>
+                        <div class="bar-container"><div class="bar-label"><span id="lbl-blink">眨眼 (Blink)</span><span id="val-blink">0.0</span></div><div class="bar-bg"><div id="bar-blink" class="bar-fill bg-blue-500"></div></div></div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- 中央指示 -->
+            <div class="flex flex-col items-center gap-3 flex-grow justify-end pb-16">
+                <div id="big-emoji" class="hidden">😃</div>
+                <div id="instruction-box" class="px-8 py-4 bg-black/70 rounded-2xl backdrop-blur-md border border-white/20 text-2xl font-bold text-yellow-300 hidden text-center transition-all shadow-lg">
+                    請張開嘴巴！
+                </div>
+
+                <!-- 模式列：兩組 -->
+                <div class="panel flex flex-col gap-2 max-w-full">
+                    <div class="flex items-center gap-2 overflow-x-auto">
+                        <span class="text-xs text-gray-400 w-10 shrink-0" id="grp-face">臉部</span>
+                        <button class="btn mode-btn active" onclick="setMode('mesh')"><span class="material-icons text-sm">grid_on</span> <span id="btn-mode-mesh">數據透視</span></button>
+                        <button class="btn mode-btn" onclick="setMode('filter')"><span class="material-icons text-sm">auto_fix_high</span> <span id="btn-mode-filter">濾鏡體驗</span></button>
+                        <button class="btn mode-btn" onclick="setMode('mimic')"><span class="material-icons text-sm">emoji_emotions</span> <span id="btn-mode-mimic">表情挑戰</span></button>
+                    </div>
+                    <div class="flex items-center gap-2 overflow-x-auto">
+                        <span class="text-xs text-gray-400 w-10 shrink-0" id="grp-hand">手部</span>
+                        <button class="btn mode-btn" onclick="setMode('handmesh')"><span class="material-icons text-sm">back_hand</span> <span id="btn-mode-handmesh">骨架透視</span></button>
+                        <button class="btn mode-btn" onclick="setMode('fingers')"><span class="material-icons text-sm">looks_one</span> <span id="btn-mode-fingers">手指數數</span></button>
+                        <button class="btn mode-btn" onclick="setMode('rps')"><span class="material-icons text-sm">sports_mma</span> <span id="btn-mode-rps">剪刀石頭布</span></button>
+                        <button class="btn mode-btn" onclick="setMode('draw')"><span class="material-icons text-sm">brush</span> <span id="btn-mode-draw">空中塗鴉</span></button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Footer -->
+            <div class="absolute bottom-4 left-4 right-4 flex justify-between items-end pointer-events-none">
+                <div id="footer-text" class="text-gray-400 text-xs bg-black/30 px-3 py-1 rounded-full backdrop-blur-sm pointer-events-auto">
+                    此程式由陳恩鴻老師開發
+                </div>
+                <button class="btn bg-blue-600 hover:bg-blue-500 pointer-events-auto shadow-lg" onclick="takeScreenshot()">
+                    <span class="material-icons">photo_camera</span> <span id="btn-screenshot">截圖留念</span>
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <script type="module">
+        import {
+            FilesetResolver,
+            FaceLandmarker,
+            HandLandmarker,
+            DrawingUtils
+        } from "https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3";
+
+        // ========== I18N ==========
+        const TRANSLATIONS = {
+            zh: {
+                title: "陳恩鴻老師AI小教室",
+                loading_title: "正在啟動 AI 引擎...",
+                loading_desc: "請允許攝影機權限",
+                hand_loading: "正在載入手部模型...",
+                hand_hint: "請舉手入鏡 ✋",
+                face_hint: "請將臉部移入鏡頭",
+                status_detecting: "偵測中",
+                show_data: "顯示數據", data_title: "Blendshapes 數據", system_judge: "系統判定",
+                status_none: "無表情", status_jaw: "😮 張開嘴巴", status_smile: "😄 微笑", status_brow: "😠 皺眉", status_blink: "😉 眨眼",
+                lbl_jaw: "張嘴 (JawOpen)", lbl_smile: "微笑 (Smile)", lbl_brow: "皺眉 (BrowDown)", lbl_blink: "眨眼 (Blink)",
+                grp_face: "臉部", grp_hand: "手部",
+                btn_mesh: "數據透視", btn_filter: "濾鏡體驗", btn_mimic: "表情挑戰",
+                btn_handmesh: "骨架透視", btn_fingers: "手指數數", btn_rps: "剪刀石頭布", btn_draw: "空中塗鴉",
+                footer: "此程式由陳恩鴻老師開發", btn_screenshot: "截圖留念", btn_start: "開始體驗",
+                lbl_time: "時間", lbl_score: "分數", arprop: "AR 道具",
+                ar_none: "無", ar_glasses: "墨鏡", ar_bunny: "兔耳", ar_hat: "帽",
+                name_placeholder: "輸入你的名字", name_required: "請先輸入名字",
+                go: "GO!", instr_success: "成功！", instr_filter_intro: "試試張嘴、微笑或皺眉！",
+                cmd_prefix: "請做出：",
+                combo_label: "Combo ×",
+                lb_title: "🏆 表情挑戰排行榜", lb_myscore: "你今次：", lb_replay: "再玩一次", lb_close: "關閉", lb_empty: "未有紀錄，做第一名啦！",
+                fingers_label: "隻手指", draw_intro: "食指畫線 ✏️　握拳清除 ✊",
+                rps_go: "出拳！", rps_you: "你", rps_cpu: "電腦", rps_win: "你贏 🎉", rps_lose: "你輸 😢", rps_draw: "平手 🤝", rps_invalid: "睇唔清手勢，再嚟！",
+                emo_smile: "😃 微笑", emo_open: "😲 張大嘴", emo_angry: "😠 生氣 (皺眉)", emo_pout: "😗 嘟嘴", emo_blink: "😉 眨眼",
+                info_mesh_title: "數據透視", info_mesh_desc: "觀察 AI 如何捕捉你臉上的 468 個特徵點，並把表情變成即時數據。",
+                info_filter_title: "濾鏡體驗", info_filter_desc: "用表情控制特效，仲可以戴 AR 道具！張嘴噴字、微笑出太陽、皺眉落雨。",
+                info_mimic_title: "表情挑戰", info_mimic_desc: "輸入名字，60 秒內跟指令做表情，連擊越多分越高，最後上排行榜！",
+                info_handmesh_title: "手部骨架透視", info_handmesh_desc: "AI 會追蹤每隻手 21 個關節點，畫出骨架。",
+                info_fingers_title: "手指數數", info_fingers_desc: "AI 靠關節點位置判斷手指伸直定彎曲，幫你數手指。",
+                info_rps_title: "剪刀石頭布", info_rps_desc: "倒數後出拳，同電腦比併！石頭✊ 布✋ 剪刀✌️。",
+                info_draw_title: "空中塗鴉", info_draw_desc: "用食指尖喺空中畫畫，握拳就清除。"
+            },
+            en: {
+                title: "Mr. Chan's AI Lab",
+                loading_title: "Starting AI Engine...",
+                loading_desc: "Please allow camera access",
+                hand_loading: "Loading hand model...",
+                hand_hint: "Raise your hand ✋",
+                face_hint: "Move your face into view",
+                status_detecting: "Detecting",
+                show_data: "Show Data", data_title: "Blendshapes Data", system_judge: "Status",
+                status_none: "Neutral", status_jaw: "😮 Mouth Open", status_smile: "😄 Smiling", status_brow: "😠 Frowning", status_blink: "😉 Blinking",
+                lbl_jaw: "Jaw Open", lbl_smile: "Smile", lbl_brow: "Brow Down", lbl_blink: "Blink",
+                grp_face: "Face", grp_hand: "Hand",
+                btn_mesh: "Mesh View", btn_filter: "AR Filter", btn_mimic: "Mimic Game",
+                btn_handmesh: "Hand Mesh", btn_fingers: "Finger Count", btn_rps: "Rock-Paper-Scissors", btn_draw: "Air Draw",
+                footer: "Developed by Teacher Chan Yan Hung", btn_screenshot: "Screenshot", btn_start: "Start",
+                lbl_time: "Time", lbl_score: "Score", arprop: "AR Prop",
+                ar_none: "None", ar_glasses: "Glasses", ar_bunny: "Bunny", ar_hat: "Hat",
+                name_placeholder: "Enter your name", name_required: "Please enter a name",
+                go: "GO!", instr_success: "Great!", instr_filter_intro: "Open mouth, smile, or frown!",
+                cmd_prefix: "Do: ",
+                combo_label: "Combo ×",
+                lb_title: "🏆 Mimic Leaderboard", lb_myscore: "Your score: ", lb_replay: "Play Again", lb_close: "Close", lb_empty: "No records yet — be the first!",
+                fingers_label: "fingers", draw_intro: "Index finger to draw ✏️  Fist to clear ✊",
+                rps_go: "Shoot!", rps_you: "You", rps_cpu: "CPU", rps_win: "You Win 🎉", rps_lose: "You Lose 😢", rps_draw: "Draw 🤝", rps_invalid: "Can't read gesture, try again!",
+                emo_smile: "😃 Smile", emo_open: "😲 Open Mouth", emo_angry: "😠 Angry (Frown)", emo_pout: "😗 Pout", emo_blink: "😉 Blink",
+                info_mesh_title: "Mesh View", info_mesh_desc: "See how AI tracks 468 facial landmarks and turns expressions into live data.",
+                info_filter_title: "AR Filter", info_filter_desc: "Control effects with your face and wear AR props! Open mouth for text, smile for sun, frown for rain.",
+                info_mimic_title: "Mimic Game", info_mimic_desc: "Enter your name, follow the prompts for 60s, build combos for higher scores, then hit the leaderboard!",
+                info_handmesh_title: "Hand Mesh", info_handmesh_desc: "AI tracks 21 joints per hand and draws the skeleton.",
+                info_fingers_title: "Finger Count", info_fingers_desc: "AI judges each finger's straight/bent state from joint positions to count fingers.",
+                info_rps_title: "Rock-Paper-Scissors", info_rps_desc: "Shoot after the countdown and play against the computer! Rock✊ Paper✋ Scissors✌️.",
+                info_draw_title: "Air Draw", info_draw_desc: "Draw in the air with your index fingertip, make a fist to clear."
+            }
+        };
+        let currentLang = 'zh';
+        const getText = (k) => (TRANSLATIONS[currentLang][k] ?? k);
+
+        // ========== 音效引擎 ==========
+        const SoundEngine = {
+            ctx: null, bgmInterval: null, rainNode: null, isPlayingRain: false, muted: false,
+            init() {
+                if (!this.ctx) this.ctx = new (window.AudioContext || window.webkitAudioContext)();
+                if (this.ctx.state === 'suspended') this.ctx.resume();
+            },
+            playTone(freq, type, duration, vol = 0.1, startTime = 0) {
+                if (this.muted) return;
+                if (!this.ctx) this.init();
+                const osc = this.ctx.createOscillator();
+                const gain = this.ctx.createGain();
+                osc.type = type;
+                osc.frequency.setValueAtTime(freq, this.ctx.currentTime + startTime);
+                gain.gain.setValueAtTime(vol, this.ctx.currentTime + startTime);
+                gain.gain.exponentialRampToValueAtTime(0.001, this.ctx.currentTime + startTime + duration);
+                osc.connect(gain); gain.connect(this.ctx.destination);
+                osc.start(this.ctx.currentTime + startTime);
+                osc.stop(this.ctx.currentTime + startTime + duration);
+            },
+            playSuccess() { this.playTone(1200, 'sine', 0.1, 0.1); this.playTone(1800, 'sine', 0.4, 0.1, 0.1); },
+            playScore() { this.playTone(800, 'triangle', 0.1, 0.05); },
+            playFail() { this.playTone(150, 'sawtooth', 0.5, 0.2); },
+            playBeep() { this.playTone(600, 'square', 0.12, 0.07); },
+            playGo() { this.playTone(1000, 'square', 0.25, 0.09); },
+            playSunSound() {
+                this.playTone(261.63, 'sine', 1.5, 0.05, 0); this.playTone(329.63, 'sine', 1.5, 0.05, 0.1);
+                this.playTone(392.00, 'sine', 1.5, 0.05, 0.2); this.playTone(523.25, 'sine', 1.5, 0.05, 0.3);
+            },
+            playShutter() {
+                if (this.muted) return;
+                if (!this.ctx) this.init();
+                const osc = this.ctx.createOscillator(); const gain = this.ctx.createGain();
+                osc.type = 'square';
+                osc.frequency.setValueAtTime(800, this.ctx.currentTime);
+                osc.frequency.exponentialRampToValueAtTime(100, this.ctx.currentTime + 0.1);
+                gain.gain.setValueAtTime(0.3, this.ctx.currentTime);
+                gain.gain.exponentialRampToValueAtTime(0.01, this.ctx.currentTime + 0.1);
+                osc.connect(gain); gain.connect(this.ctx.destination);
+                osc.start(); osc.stop(this.ctx.currentTime + 0.1);
+            },
+            startRainSound() {
+                if (this.isPlayingRain || !this.ctx || this.muted) return;
+                this.isPlayingRain = true;
+                const bufferSize = 2 * this.ctx.sampleRate;
+                const noiseBuffer = this.ctx.createBuffer(1, bufferSize, this.ctx.sampleRate);
+                const output = noiseBuffer.getChannelData(0);
+                for (let i = 0; i < bufferSize; i++) output[i] = Math.random() * 2 - 1;
+                this.rainNode = this.ctx.createBufferSource();
+                this.rainNode.buffer = noiseBuffer; this.rainNode.loop = true;
+                const gain = this.ctx.createGain(); gain.gain.value = 0.05;
+                const filter = this.ctx.createBiquadFilter(); filter.type = 'lowpass'; filter.frequency.value = 800;
+                this.rainNode.connect(filter); filter.connect(gain); gain.connect(this.ctx.destination);
+                this.rainNode.start();
+            },
+            stopRainSound() {
+                if (this.rainNode) { try { this.rainNode.stop(); } catch (e) {} this.rainNode = null; }
+                this.isPlayingRain = false;
+            },
+            // 表情挑戰背景音樂（輕快 8-bit 循環，低音量）
+            startBGM() {
+                if (this.bgmInterval || this.muted) return;
+                let note = 0;
+                const notes = [262, 0, 330, 392, 0, 330, 294, 0, 262, 0, 330, 0, 392, 440, 392, 0];
+                this.bgmInterval = setInterval(() => {
+                    if (this.muted) return;
+                    if (this.ctx && this.ctx.state === 'suspended') this.ctx.resume();
+                    const freq = notes[note % notes.length];
+                    if (freq > 0) this.playTone(freq, 'square', 0.12, 0.03);
+                    note++;
+                }, 200);
+            },
+            stopBGM() { clearInterval(this.bgmInterval); this.bgmInterval = null; }
+        };
+        document.addEventListener('click', () => SoundEngine.init(), { once: true });
+
+        // ========== DOM ==========
+        const video = document.getElementById("webcam");
+        const canvasContainer = document.getElementById("canvas-container");
+        const canvasElement = document.getElementById("output_canvas");
+        const canvasCtx = canvasElement.getContext("2d");
+        const gameCanvas = document.getElementById("game-canvas");
+        const gameCtx = gameCanvas.getContext("2d");
+        const loadingOverlay = document.getElementById("loading-overlay");
+
+        const dataPanel = document.getElementById("data-panel");
+        const dataToggleBtn = document.getElementById("data-toggle-btn");
+        const expressionStatus = document.getElementById("expression-status");
+        const scorePanel = document.getElementById("score-panel");
+        const scoreDisplay = document.getElementById("score-display");
+        const timerChip = document.getElementById("timer-chip");
+        const timerDisplay = document.getElementById("timer-display");
+        const comboChip = document.getElementById("combo-chip");
+        const comboVal = document.getElementById("combo-val");
+        const instructionBox = document.getElementById("instruction-box");
+        const bigEmoji = document.getElementById("big-emoji");
+        const countdownOverlay = document.getElementById("countdown-overlay");
+        const arBar = document.getElementById("ar-bar");
+
+        const introModal = document.getElementById("intro-modal");
+        const introTitle = document.getElementById("intro-title");
+        const introDesc = document.getElementById("intro-desc");
+        const introIcon = document.getElementById("intro-icon");
+        const introNameWrap = document.getElementById("intro-name-wrap");
+        const playerNameInput = document.getElementById("player-name");
+        const nameHint = document.getElementById("name-hint");
+
+        const leaderboardModal = document.getElementById("leaderboard-modal");
+        const lbList = document.getElementById("lb-list");
+        const lbMyScore = document.getElementById("lb-myscore");
+
+        // ========== 狀態 ==========
+        let faceLandmarker, handLandmarker, drawingUtils;
+        let runningMode = "VIDEO", lastVideoTime = -1;
+        let currentMode = 'mesh';
+        let currentBlendshapes = {}, landmarksData = null;
+        let isIntroOpen = false;
+        let handModelLoading = false;
+        let latestHandResults = null;
+
+        // filter
+        let particles = [], rainDrops = [], isSunActive = false, isRainActive = false, activeFilterType = 'none';
+        let textToggle = 0;
+        let arProp = localStorage.getItem('aifacelab_arprop') || 'glasses';
+
+        // mimic
+        const emotions = [
+            { keyName: 'emo_smile', emoji: '😃', check: (b) => (b['mouthSmileLeft'] + b['mouthSmileRight']) / 2 > 0.5 },
+            { keyName: 'emo_open',  emoji: '😲', check: (b) => b['jawOpen'] > 0.5 },
+            { keyName: 'emo_angry', emoji: '😠', check: (b) => (b['browDownLeft'] + b['browDownRight']) / 2 > 0.4 },
+            { keyName: 'emo_pout',  emoji: '😗', check: (b) => b['mouthPucker'] > 0.5 },
+            { keyName: 'emo_blink', emoji: '😉', check: (b) => (b['eyeBlinkLeft'] > 0.5 || b['eyeBlinkRight'] > 0.5) }
+        ];
+        let mimicTarget = null, mimicHold = 0, mimicCooldown = 0, lastMimicIndex = -1;
+        let mimicScore = 0, mimicCombo = 0, mimicTimeLeft = 60, mimicTimerId = null;
+        let mimicRunning = false, mimicCountdownActive = false;
+        let playerName = '', lastEntryTs = 0;
+        let bursts = [];
+        const LB_KEY = 'aifacelab_mimic_leaderboard';
+
+        // rps
+        let rpsState = 'idle', rpsPlayer = null, rpsComputer = null, rpsResultText = '', rpsWins = 0;
+        let rpsCountText = '', rpsTimer = null, rpsNextTimer = null;
+        const RPS = ['rock', 'paper', 'scissors'];
+        const RPS_EMOJI = { rock: '✊', paper: '✋', scissors: '✌️' };
+
+        // draw
+        let drawStrokes = [], currentStroke = null;
+
+        const FACE_MODES = ['mesh', 'filter', 'mimic'];
+        const isHandMode = (m) => ['handmesh', 'fingers', 'rps', 'draw'].includes(m);
+
+        const MODE_BTN = {
+            mesh: 'btn-mode-mesh', filter: 'btn-mode-filter', mimic: 'btn-mode-mimic',
+            handmesh: 'btn-mode-handmesh', fingers: 'btn-mode-fingers', rps: 'btn-mode-rps', draw: 'btn-mode-draw'
+        };
+        const MODE_INFO = {
+            mesh: '📐', filter: '✨', mimic: '🤪', handmesh: '✋', fingers: '🔢', rps: '✊', draw: '🎨'
+        };
+
+        // ========== 模型 ==========
+        async function createFaceLandmarker() {
+            const fr = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/wasm");
+            const opt = (d) => ({
+                baseOptions: { modelAssetPath: "https://storage.googleapis.com/mediapipe-models/face_landmarker/face_landmarker/float16/1/face_landmarker.task", delegate: d },
+                outputFaceBlendshapes: true, runningMode, numFaces: 1
+            });
+            try { faceLandmarker = await FaceLandmarker.createFromOptions(fr, opt("GPU")); }
+            catch (e) { console.warn("Face GPU 失敗，改 CPU", e); faceLandmarker = await FaceLandmarker.createFromOptions(fr, opt("CPU")); }
+            drawingUtils = new DrawingUtils(canvasCtx);
+            startCamera();
+        }
+
+        async function ensureHandLandmarker() {
+            if (handLandmarker || handModelLoading) return;
+            handModelLoading = true;
+            try {
+                const fr = await FilesetResolver.forVisionTasks("https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.3/wasm");
+                const opt = (d) => ({
+                    baseOptions: { modelAssetPath: "https://storage.googleapis.com/mediapipe-models/hand_landmarker/hand_landmarker/float16/1/hand_landmarker.task", delegate: d },
+                    runningMode, numHands: 2
+                });
+                try { handLandmarker = await HandLandmarker.createFromOptions(fr, opt("GPU")); }
+                catch (e) { console.warn("Hand GPU 失敗，改 CPU", e); handLandmarker = await HandLandmarker.createFromOptions(fr, opt("CPU")); }
+            } catch (e) { console.error("手部模型載入失敗", e); }
+            handModelLoading = false;
+        }
+
+        async function startCamera() {
+            const constraintsHigh = { video: { width: 1280, height: 720, facingMode: "user" } };
+            const constraintsLow = { video: true };
+            if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { handleCameraError({ name: "BrowserNotSupported" }); return; }
+
+            async function getStream(constraints) {
+                const stream = await navigator.mediaDevices.getUserMedia(constraints);
+                video.srcObject = stream;
+                return new Promise((resolve, reject) => {
+                    const handleLoaded = () => { cleanup(); video.play().then(() => resolve(true)).catch(err => { console.warn("播放被阻擋，繼續：", err); resolve(true); }); };
+                    const handleError = (e) => { cleanup(); reject(e); };
+                    const cleanup = () => {
+                        video.removeEventListener('loadeddata', handleLoaded);
+                        video.removeEventListener('loadedmetadata', handleLoaded);
+                        video.removeEventListener('error', handleError);
+                        clearTimeout(timeoutId);
+                    };
+                    if (video.readyState >= 2) { handleLoaded(); return; }
+                    video.addEventListener('loadeddata', handleLoaded);
+                    video.addEventListener('loadedmetadata', handleLoaded);
+                    video.addEventListener('error', handleError);
+                    const timeoutId = setTimeout(() => {
+                        if (video.readyState >= 1) handleLoaded();
+                        else { cleanup(); reject(new Error("Video load timeout")); }
+                    }, 5000);
+                });
+            }
+
+            try { await getStream(constraintsHigh); }
+            catch (err) {
+                try { await getStream(constraintsLow); }
+                catch (fallbackErr) { handleCameraError(fallbackErr); return; }
+            }
+
+            loadingOverlay.style.display = "none";
+            resizeCanvas();
+            window.addEventListener('resize', resizeCanvas);
+            predictWebcam();
+            showIntro('mesh');
+        }
+
+        function handleCameraError(err) {
+            document.querySelector('.loader').style.display = 'none';
+            const title = document.getElementById('txt-loading-title');
+            const desc = document.getElementById('txt-loading-desc');
+            title.innerText = "無法啟動攝影機";
+            title.className = "text-xl font-bold text-red-500";
+
+            const isFileProtocol = window.location.protocol === 'file:';
+            let errorMsg = "未知錯誤";
+            if (isFileProtocol) errorMsg = "偵測到你用 file:// 直接開檔，瀏覽器安全限制會封鎖攝影機";
+            else if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') errorMsg = "瀏覽器拒絕了攝影機權限";
+            else if (err.name === 'NotFoundError' || err.name === 'DevicesNotFoundError') errorMsg = "找不到可用的攝影機裝置";
+            else if (err.name === 'NotReadableError' || err.name === 'TrackStartError') errorMsg = "攝影機可能被其他程式佔用 (Zoom/Meet?)";
+            else if (err.message && err.message.includes("timeout")) errorMsg = "啟動攝影機逾時，請重新整理";
+
+            const tips = isFileProtocol
+                ? `<li>請用本地伺服器開啟，例如在此資料夾執行 <code class="bg-black/40 px-1 rounded">python -m http.server</code></li>
+                   <li>再用瀏覽器開 <code class="bg-black/40 px-1 rounded">http://localhost:8000/ai_face_lab.html</code></li>
+                   <li>或用 VS Code 的 Live Server 擴充功能開啟</li>`
+                : `<li>確認裝置是否裝有攝影機</li><li>點擊網址列的鎖頭圖示重設權限</li><li>關閉其他使用鏡頭的程式</li>`;
+
+            desc.innerHTML = `<div class="text-left bg-slate-800 p-4 rounded mt-4">
+                <p class="mb-2 font-bold text-white text-center">${errorMsg}</p>
+                <p class="mt-4 text-yellow-400 font-bold">請嘗試：</p>
+                <ul class="list-disc pl-5 text-gray-300 space-y-1">${tips}</ul></div>`;
+        }
+
+        // ========== 介面文字 ==========
+        window.toggleLanguage = () => {
+            currentLang = currentLang === 'zh' ? 'en' : 'zh';
+            updateInterfaceText();
+            if (isIntroOpen) showIntro(currentMode);
+            if (!leaderboardModal.classList.contains('hidden')) renderLeaderboard(lastEntryTs);
+        };
+
+        function updateInterfaceText() {
+            document.title = getText('title') + " - 人臉/手部識別篇";
+            const set = (id, key) => { const el = document.getElementById(id); if (el) el.innerText = getText(key); };
+            set('main-title', 'title'); set('txt-loading-title', 'loading_title'); set('txt-loading-desc', 'loading_desc');
+            set('txt-status', 'status_detecting'); set('txt-show-data', 'show_data'); set('txt-data-title', 'data_title'); set('txt-system-judge', 'system_judge');
+            set('lbl-jaw', 'lbl_jaw'); set('lbl-smile', 'lbl_smile'); set('lbl-brow', 'lbl_brow'); set('lbl-blink', 'lbl_blink');
+            set('grp-face', 'grp_face'); set('grp-hand', 'grp_hand');
+            set('btn-mode-mesh', 'btn_mesh'); set('btn-mode-filter', 'btn_filter'); set('btn-mode-mimic', 'btn_mimic');
+            set('btn-mode-handmesh', 'btn_handmesh'); set('btn-mode-fingers', 'btn_fingers'); set('btn-mode-rps', 'btn_rps'); set('btn-mode-draw', 'btn_draw');
+            set('footer-text', 'footer'); set('btn-screenshot', 'btn_screenshot'); set('btn-start-intro', 'btn_start');
+            set('txt-time', 'lbl_time'); set('txt-score', 'lbl_score'); set('txt-arprop', 'arprop');
+            set('ar-none', 'ar_none'); set('ar-glasses', 'ar_glasses'); set('ar-bunny', 'ar_bunny'); set('ar-hat', 'ar_hat');
+            set('lb-title', 'lb_title'); set('btn-lb-replay', 'lb_replay'); set('btn-lb-close', 'lb_close');
+            playerNameInput.placeholder = getText('name_placeholder');
+            nameHint.innerText = getText('name_required');
+        }
+
+        function resizeCanvas() {
+            const TARGET_RATIO = 16 / 9;
+            const winW = window.innerWidth, winH = window.innerHeight;
+            let finalW, finalH;
+            if (winW / winH > TARGET_RATIO) { finalH = winH; finalW = winH * TARGET_RATIO; }
+            else { finalW = winW; finalH = winW / TARGET_RATIO; }
+            canvasContainer.style.width = `${finalW}px`;
+            canvasContainer.style.height = `${finalH}px`;
+            canvasElement.width = finalW; canvasElement.height = finalH;
+            gameCanvas.width = finalW; gameCanvas.height = finalH;
+        }
+
+        function drawVideoProp(ctx, vid, targetW, targetH) {
+            const vidRatio = vid.videoWidth / vid.videoHeight;
+            const targetRatio = targetW / targetH;
+            let sx, sy, sw, sh;
+            if (vidRatio > targetRatio) { sh = vid.videoHeight; sw = sh * targetRatio; sy = 0; sx = (vid.videoWidth - sw) / 2; }
+            else { sw = vid.videoWidth; sh = sw / targetRatio; sx = 0; sy = (vid.videoHeight - sh) / 2; }
+            ctx.drawImage(vid, sx, sy, sw, sh, 0, 0, targetW, targetH);
+        }
+
+        // ========== 主迴圈 ==========
+        function predictWebcam() {
+            const now = performance.now();
+            if (lastVideoTime !== video.currentTime) {
+                lastVideoTime = video.currentTime;
+                try {
+                    canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+                    gameCtx.clearRect(0, 0, gameCanvas.width, gameCanvas.height);
+
+                    canvasCtx.save();
+                    canvasCtx.translate(canvasElement.width, 0);
+                    canvasCtx.scale(-1, 1);
+
+                    if (isHandMode(currentMode)) {
+                        if (currentMode === 'handmesh') canvasCtx.filter = 'grayscale(70%) brightness(60%)';
+                        drawVideoProp(canvasCtx, video, canvasElement.width, canvasElement.height);
+                        canvasCtx.filter = 'none';
+
+                        if (!handLandmarker) {
+                            canvasCtx.restore();
+                            gameText(getText('hand_loading'), '#fbbf24');
+                            window.requestAnimationFrame(predictWebcam);
+                            return;
+                        }
+                        const res = handLandmarker.detectForVideo(video, now);
+                        latestHandResults = res;
+                        runHandMode(res);
+                        canvasCtx.restore();
+                    } else {
+                        if (currentMode === 'mesh') canvasCtx.filter = 'grayscale(80%) brightness(50%)';
+                        drawVideoProp(canvasCtx, video, canvasElement.width, canvasElement.height);
+                        if (currentMode === 'filter') { determineFilterState(); drawFilterOverlays(); }
+                        canvasCtx.filter = 'none';
+
+                        const res = faceLandmarker.detectForVideo(video, now);
+                        if (res.faceLandmarks && res.faceLandmarks.length > 0) {
+                            landmarksData = res.faceLandmarks[0];
+                            processBlendshapes(res.faceBlendshapes[0].categories);
+                            if (currentMode === 'mesh') drawMesh(landmarksData);
+                            else if (currentMode === 'filter') { drawFilterEffects(landmarksData); drawArProp(landmarksData); }
+                            else if (currentMode === 'mimic' && mimicRunning && !isIntroOpen && !mimicCountdownActive) drawMimicGame(landmarksData);
+                        } else {
+                            landmarksData = null;
+                            stopFilterSounds();
+                            if (currentMode === 'mimic' && mimicRunning && !mimicCountdownActive) gameText(getText('face_hint'), '#fff');
+                        }
+                        canvasCtx.restore();
+                        if (currentMode === 'mimic') drawBursts();
+                    }
+                } catch (err) {
+                    console.warn("偵測影格出錯（已略過）：", err);
+                    try { canvasCtx.restore(); } catch (e) {}
+                }
+            }
+            window.requestAnimationFrame(predictWebcam);
+        }
+
+        function gameText(text, color) {
+            gameCtx.fillStyle = color; gameCtx.font = "bold 30px 'Microsoft JhengHei', Arial";
+            gameCtx.textAlign = "center"; gameCtx.textBaseline = "middle";
+            gameCtx.fillText(text, gameCanvas.width / 2, gameCanvas.height / 2);
+        }
+
+        // ========== 數據透視 ==========
+        function processBlendshapes(blendshapes) {
+            blendshapes.forEach(b => { currentBlendshapes[b.categoryName] = b.score; });
+            if (currentMode === 'mesh' && !dataPanel.classList.contains('hidden')) {
+                const jaw = currentBlendshapes['jawOpen'];
+                const smile = (currentBlendshapes['mouthSmileLeft'] + currentBlendshapes['mouthSmileRight']) / 2;
+                const brow = (currentBlendshapes['browDownLeft'] + currentBlendshapes['browDownRight']) / 2;
+                const blink = (currentBlendshapes['eyeBlinkLeft'] + currentBlendshapes['eyeBlinkRight']) / 2;
+                updateBar('bar-jaw', 'val-jaw', jaw); updateBar('bar-smile', 'val-smile', smile);
+                updateBar('bar-brow', 'val-brow', brow); updateBar('bar-blink', 'val-blink', blink);
+                let status = getText('status_none'), colorClass = "text-gray-400";
+                if (jaw > 0.3) { status = getText('status_jaw'); colorClass = "text-red-400"; }
+                else if (smile > 0.5) { status = getText('status_smile'); colorClass = "text-yellow-400"; }
+                else if (brow > 0.4) { status = getText('status_brow'); colorClass = "text-purple-400"; }
+                else if (blink > 0.5) { status = getText('status_blink'); colorClass = "text-blue-400"; }
+                expressionStatus.innerText = status;
+                expressionStatus.className = `text-lg font-bold ${colorClass}`;
+            }
+        }
+        function updateBar(barId, labelId, value) {
+            const el = document.getElementById(barId), label = document.getElementById(labelId);
+            if (el && label) { el.style.width = `${Math.min(100, Math.max(0, value * 100))}%`; label.innerText = value.toFixed(2); }
+        }
+        function drawMesh(lm) {
+            drawingUtils.drawConnectors(lm, FaceLandmarker.FACE_LANDMARKS_TESSELATION, { color: "#C0C0C050", lineWidth: 1 });
+            drawingUtils.drawConnectors(lm, FaceLandmarker.FACE_LANDMARKS_RIGHT_EYE, { color: "#FF3030" });
+            drawingUtils.drawConnectors(lm, FaceLandmarker.FACE_LANDMARKS_LEFT_EYE, { color: "#30FF30" });
+            drawingUtils.drawConnectors(lm, FaceLandmarker.FACE_LANDMARKS_LIPS, { color: "#E0E0E0" });
+        }
+
+        // ========== 濾鏡 ==========
+        function determineFilterState() {
+            const jawOpen = currentBlendshapes['jawOpen'] || 0;
+            const smile = (currentBlendshapes['mouthSmileLeft'] + currentBlendshapes['mouthSmileRight']) / 2;
+            const frown = (currentBlendshapes['browDownLeft'] + currentBlendshapes['browDownRight']) / 2;
+            const mouthFrown = (currentBlendshapes['mouthFrownLeft'] + currentBlendshapes['mouthFrownRight']) / 2;
+            if (jawOpen > 0.3) activeFilterType = 'particles';
+            else if (smile > 0.5) activeFilterType = 'sun';
+            else if (frown > 0.4 || mouthFrown > 0.4) activeFilterType = 'rain';
+            else activeFilterType = 'none';
+        }
+        function drawFilterOverlays() {
+            if (activeFilterType === 'sun') {
+                canvasCtx.fillStyle = "rgba(255, 160, 0, 0.15)"; canvasCtx.fillRect(0, 0, canvasElement.width, canvasElement.height);
+                if (!isSunActive) { SoundEngine.playSunSound(); isSunActive = true; }
+                if (isRainActive) { SoundEngine.stopRainSound(); isRainActive = false; }
+            } else if (activeFilterType === 'rain') {
+                canvasCtx.fillStyle = "rgba(0, 20, 60, 0.4)"; canvasCtx.fillRect(0, 0, canvasElement.width, canvasElement.height);
+                if (!isRainActive) { SoundEngine.startRainSound(); isRainActive = true; }
+                isSunActive = false;
+            } else stopFilterSounds();
+        }
+        function stopFilterSounds() { isSunActive = false; if (isRainActive) { SoundEngine.stopRainSound(); isRainActive = false; } }
+
+        function drawFilterEffects(lm) {
+            const W = canvasElement.width, H = canvasElement.height;
+            if (activeFilterType === 'particles') {
+                const mouthX = (lm[13].x + lm[14].x) / 2 * W;
+                const mouthY = (lm[13].y + lm[14].y) / 2 * H;
+                if (Math.random() < 0.25) {
+                    const word = (textToggle++ % 2 === 0) ? "YY3" : "LSY";
+                    particles.push({
+                        x: mouthX + (Math.random() - 0.5) * 120, y: mouthY,
+                        vx: (Math.random() - 0.5) * 22, vy: -Math.random() * 20 - 9,
+                        life: 1.6, text: word, color: `hsl(${Math.random() * 360}, 100%, 65%)`,
+                        size: 70 + Math.random() * 40
+                    });
+                }
+            }
+            particles.forEach((p, i) => {
+                p.x += p.vx; p.y += p.vy; p.vy += 0.5; p.life -= 0.018;
+                if (p.life > 0) {
+                    canvasCtx.font = `900 ${p.size || 80}px Arial`;
+                    canvasCtx.globalAlpha = Math.min(1, p.life);
+                    canvasCtx.fillStyle = "rgba(0,0,0,0.5)"; canvasCtx.fillText(p.text, p.x + 5, p.y + 5);
+                    canvasCtx.fillStyle = p.color; canvasCtx.fillText(p.text, p.x, p.y);
+                    canvasCtx.lineWidth = 3; canvasCtx.strokeStyle = "white"; canvasCtx.strokeText(p.text, p.x, p.y);
+                    canvasCtx.globalAlpha = 1.0;
+                } else particles.splice(i, 1);
+            });
+
+            if (activeFilterType === 'sun') {
+                const hx = lm[10].x * W, hy = lm[10].y * H - 120;
+                canvasCtx.save(); canvasCtx.translate(hx, hy); canvasCtx.rotate(Date.now() / 1000);
+                const g = canvasCtx.createRadialGradient(0, 0, 20, 0, 0, 150);
+                g.addColorStop(0, "rgba(255,255,200,0.8)"); g.addColorStop(1, "rgba(255,100,0,0)");
+                canvasCtx.fillStyle = g; canvasCtx.beginPath(); canvasCtx.arc(0, 0, 150, 0, Math.PI * 2); canvasCtx.fill();
+                canvasCtx.beginPath(); canvasCtx.arc(0, 0, 60, 0, Math.PI * 2); canvasCtx.fillStyle = "#fbbf24"; canvasCtx.fill();
+                for (let i = 0; i < 12; i++) { canvasCtx.rotate(Math.PI / 6); canvasCtx.fillStyle = "rgba(255,200,50,0.8)"; canvasCtx.fillRect(-5, 70, 10, 40); }
+                canvasCtx.restore();
+            }
+            if (activeFilterType === 'rain') {
+                if (rainDrops.length < 150) for (let i = 0; i < 8; i++) rainDrops.push({ x: Math.random() * W, y: -20, l: Math.random() * 20 + 20, v: Math.random() * 10 + 20 });
+                canvasCtx.strokeStyle = "rgba(200,230,255,0.7)"; canvasCtx.lineWidth = 2; canvasCtx.beginPath();
+                rainDrops.forEach(r => { r.y += r.v; canvasCtx.moveTo(r.x, r.y); canvasCtx.lineTo(r.x, r.y + r.l); if (r.y > H) r.y = -20; });
+                canvasCtx.stroke();
+            } else rainDrops = [];
+        }
+
+        // ========== AR 道具 ==========
+        function drawArProp(lm) {
+            if (arProp === 'none') return;
+            const W = canvasElement.width, H = canvasElement.height;
+            const e1 = { x: lm[33].x * W, y: lm[33].y * H };   // 一邊眼角
+            const e2 = { x: lm[263].x * W, y: lm[263].y * H }; // 另一邊眼角
+            const cx = (e1.x + e2.x) / 2, cy = (e1.y + e2.y) / 2;
+            const ang = Math.atan2(e2.y - e1.y, e2.x - e1.x);
+            const eyeDist = Math.hypot(e2.x - e1.x, e2.y - e1.y);
+            const f = { x: lm[10].x * W, y: lm[10].y * H };
+            const faceW = Math.hypot((lm[454].x - lm[234].x) * W, (lm[454].y - lm[234].y) * H);
+
+            if (arProp === 'glasses') {
+                canvasCtx.save(); canvasCtx.translate(cx, cy); canvasCtx.rotate(ang);
+                const r = eyeDist * 0.42, off = eyeDist / 2;
+                canvasCtx.lineWidth = Math.max(4, eyeDist * 0.06); canvasCtx.strokeStyle = "#111";
+                canvasCtx.fillStyle = "rgba(20,20,30,0.78)";
+                [-off, off].forEach(dx => { canvasCtx.beginPath(); canvasCtx.arc(dx, 0, r, 0, Math.PI * 2); canvasCtx.fill(); canvasCtx.stroke(); });
+                canvasCtx.beginPath(); canvasCtx.moveTo(-off + r, 0); canvasCtx.lineTo(off - r, 0); canvasCtx.stroke();
+                canvasCtx.beginPath(); canvasCtx.moveTo(-off - r, 0); canvasCtx.lineTo(-off - r - eyeDist * 0.5, -eyeDist * 0.15); canvasCtx.stroke();
+                canvasCtx.beginPath(); canvasCtx.moveTo(off + r, 0); canvasCtx.lineTo(off + r + eyeDist * 0.5, -eyeDist * 0.15); canvasCtx.stroke();
+                canvasCtx.restore();
+            } else if (arProp === 'bunny') {
+                canvasCtx.save(); canvasCtx.translate(f.x, f.y); canvasCtx.rotate(ang);
+                const ew = faceW * 0.14, eh = faceW * 0.5, gap = faceW * 0.22;
+                [-1, 1].forEach(s => {
+                    canvasCtx.fillStyle = "#fff"; canvasCtx.beginPath();
+                    canvasCtx.ellipse(s * gap, -eh * 0.85, ew, eh, s * 0.12, 0, Math.PI * 2); canvasCtx.fill();
+                    canvasCtx.fillStyle = "#f9a8d4"; canvasCtx.beginPath();
+                    canvasCtx.ellipse(s * gap, -eh * 0.85, ew * 0.5, eh * 0.62, s * 0.12, 0, Math.PI * 2); canvasCtx.fill();
+                });
+                canvasCtx.restore();
+            } else if (arProp === 'hat') {
+                canvasCtx.save(); canvasCtx.translate(f.x, f.y); canvasCtx.rotate(ang);
+                const bw = faceW * 0.95, bh = faceW * 0.12, ch = faceW * 0.55, cw = faceW * 0.62;
+                canvasCtx.fillStyle = "#1f2937";
+                canvasCtx.fillRect(-bw / 2, -bh, bw, bh);
+                canvasCtx.beginPath(); canvasCtx.moveTo(-cw / 2, -bh); canvasCtx.lineTo(-cw / 2 + faceW * 0.08, -bh - ch);
+                canvasCtx.lineTo(cw / 2 - faceW * 0.08, -bh - ch); canvasCtx.lineTo(cw / 2, -bh); canvasCtx.closePath(); canvasCtx.fill();
+                canvasCtx.fillStyle = "#ef4444"; canvasCtx.fillRect(-cw / 2, -bh - faceW * 0.1, cw, faceW * 0.08);
+                canvasCtx.restore();
+            }
+        }
+        window.setArProp = (p) => {
+            arProp = p; localStorage.setItem('aifacelab_arprop', p);
+            arBar.querySelectorAll('[data-prop]').forEach(b => b.classList.toggle('active', b.dataset.prop === p));
+        };
+
+        // ========== 表情挑戰 ==========
+        function startMimicRound() {
+            let idx; do { idx = Math.floor(Math.random() * emotions.length); } while (idx === lastMimicIndex && emotions.length > 1);
+            lastMimicIndex = idx; mimicTarget = emotions[idx]; mimicHold = 0;
+            bigEmoji.textContent = mimicTarget.emoji; bigEmoji.classList.remove('hidden');
+            showInstruction(getText('cmd_prefix') + getText(mimicTarget.keyName));
+        }
+        function drawMimicGame(lm) {
+            if (Date.now() < mimicCooldown) return;
+            if (!mimicTarget) { startMimicRound(); return; }
+            let minX = 1, minY = 1, maxX = 0, maxY = 0;
+            lm.forEach(p => { if (p.x < minX) minX = p.x; if (p.x > maxX) maxX = p.x; if (p.y < minY) minY = p.y; if (p.y > maxY) maxY = p.y; });
+            const W = canvasElement.width, H = canvasElement.height;
+            const x = minX * W, y = minY * H, w = (maxX - minX) * W, h = (maxY - minY) * H;
+            if (mimicTarget.check(currentBlendshapes)) {
+                mimicHold++;
+                canvasCtx.strokeStyle = "#00FF00"; canvasCtx.lineWidth = 6;
+                canvasCtx.beginPath(); canvasCtx.rect(x, y, w, h); canvasCtx.stroke();
+                canvasCtx.fillStyle = `rgba(0,255,0,${Math.min(mimicHold / 10, 1) * 0.3})`; canvasCtx.fill();
+                if (mimicHold > 10) {
+                    mimicCombo++;
+                    const pts = 10 + (Math.min(mimicCombo, 10) - 1) * 2;
+                    mimicScore += pts; updateScore(mimicScore); updateCombo();
+                    SoundEngine.playSuccess(); spawnBurst(lm);
+                    showInstruction(getText('instr_success') + ` +${pts}`, true);
+                    mimicTarget = null; mimicHold = 0; mimicCooldown = Date.now() + 500;
+                    bigEmoji.classList.add('hidden');
+                }
+            } else {
+                mimicHold = 0;
+                canvasCtx.strokeStyle = "#FFFFFF"; canvasCtx.lineWidth = 2; canvasCtx.strokeRect(x, y, w, h);
+            }
+        }
+        function spawnBurst(lm) {
+            const W = gameCanvas.width, H = gameCanvas.height;
+            const ox = (1 - lm[10].x) * W, oy = lm[10].y * H; // game-canvas 唔鏡像，要用 1-x
+            for (let i = 0; i < 24; i++) {
+                const a = Math.random() * Math.PI * 2, sp = Math.random() * 9 + 4;
+                bursts.push({ x: ox, y: oy, vx: Math.cos(a) * sp, vy: Math.sin(a) * sp - 4, life: 1, color: `hsl(${Math.random() * 360},100%,60%)`, r: Math.random() * 6 + 3 });
+            }
+        }
+        function drawBursts() {
+            bursts.forEach((b, i) => {
+                b.x += b.vx; b.y += b.vy; b.vy += 0.35; b.life -= 0.025;
+                if (b.life > 0) {
+                    gameCtx.globalAlpha = Math.max(0, b.life); gameCtx.fillStyle = b.color;
+                    gameCtx.beginPath(); gameCtx.arc(b.x, b.y, b.r, 0, Math.PI * 2); gameCtx.fill();
+                    gameCtx.globalAlpha = 1;
+                } else bursts.splice(i, 1);
+            });
+        }
+        function updateScore(s) {
+            scoreDisplay.innerText = s; scoreDisplay.classList.remove('score-pop'); void scoreDisplay.offsetWidth; scoreDisplay.classList.add('score-pop');
+        }
+        function updateCombo() {
+            if (mimicCombo > 1) { comboVal.innerText = mimicCombo; comboChip.classList.remove('hidden'); }
+            else comboChip.classList.add('hidden');
+        }
+        function updateTimer() {
+            timerDisplay.innerText = mimicTimeLeft;
+            timerDisplay.classList.toggle('timer-danger', mimicTimeLeft <= 10);
+        }
+
+        function startMimicGame() {
+            mimicScore = 0; mimicCombo = 0; mimicTimeLeft = 60; mimicTarget = null; mimicCooldown = 0; mimicHold = 0; mimicRunning = false; bursts = [];
+            updateScore(0); updateCombo(); updateTimer();
+            timerChip.classList.remove('hidden'); scorePanel.classList.remove('hidden');
+            SoundEngine.startBGM();
+            doCountdown(() => {
+                mimicRunning = true; startMimicRound();
+                clearInterval(mimicTimerId);
+                mimicTimerId = setInterval(() => {
+                    mimicTimeLeft--; updateTimer();
+                    if (mimicTimeLeft <= 0) endMimic();
+                }, 1000);
+            });
+        }
+        function endMimic() {
+            clearInterval(mimicTimerId); mimicRunning = false;
+            SoundEngine.stopBGM(); SoundEngine.playTone(880, 'sine', 0.15, 0.1); SoundEngine.playTone(1320, 'sine', 0.4, 0.1, 0.15);
+            bigEmoji.classList.add('hidden'); instructionBox.classList.add('hidden'); timerChip.classList.add('hidden');
+            const entry = saveScore(playerName, mimicScore);
+            lastEntryTs = entry.ts;
+            renderLeaderboard(entry.ts);
+            leaderboardModal.classList.remove('hidden');
+        }
+        function doCountdown(done) {
+            mimicCountdownActive = true;
+            const seq = ['3', '2', '1', getText('go')];
+            let i = 0;
+            countdownOverlay.textContent = seq[0]; countdownOverlay.classList.remove('hidden');
+            countdownOverlay.classList.remove('cd-anim'); void countdownOverlay.offsetWidth; countdownOverlay.classList.add('cd-anim');
+            SoundEngine.playBeep();
+            const t = setInterval(() => {
+                i++;
+                if (i < seq.length) {
+                    countdownOverlay.textContent = seq[i];
+                    countdownOverlay.classList.remove('cd-anim'); void countdownOverlay.offsetWidth; countdownOverlay.classList.add('cd-anim');
+                    if (i < 3) SoundEngine.playBeep(); else SoundEngine.playGo();
+                } else {
+                    clearInterval(t); countdownOverlay.classList.add('hidden'); mimicCountdownActive = false; done();
+                }
+            }, 700);
+        }
+        function stopMimic() {
+            clearInterval(mimicTimerId); mimicRunning = false; mimicCountdownActive = false; mimicTarget = null; bursts = [];
+            countdownOverlay.classList.add('hidden'); bigEmoji.classList.add('hidden');
+            comboChip.classList.add('hidden'); timerChip.classList.add('hidden');
+            SoundEngine.stopBGM();
+        }
+
+        // 排行榜
+        const escapeHtml = (s) => s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+        function loadBoard() { try { return JSON.parse(localStorage.getItem(LB_KEY)) || []; } catch (e) { return []; } }
+        function saveScore(name, score) {
+            const board = loadBoard();
+            const entry = { name, score, ts: Date.now() };
+            board.push(entry); board.sort((a, b) => b.score - a.score);
+            localStorage.setItem(LB_KEY, JSON.stringify(board.slice(0, 50)));
+            return entry;
+        }
+        function renderLeaderboard(highlightTs) {
+            const board = loadBoard();
+            lbMyScore.innerText = getText('lb_myscore') + mimicScore;
+            if (board.length === 0) { lbList.innerHTML = `<p class="text-center text-gray-400 py-6">${getText('lb_empty')}</p>`; return; }
+            const medals = ['🥇', '🥈', '🥉'];
+            lbList.innerHTML = board.slice(0, 10).map((e, i) => {
+                const rank = medals[i] || `<span class="text-gray-400 font-mono">${i + 1}.</span>`;
+                const d = new Date(e.ts); const ds = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+                const me = e.ts === highlightTs ? ' me' : '';
+                return `<div class="lb-row${me}"><span class="flex items-center gap-2 text-lg">${rank} <b>${escapeHtml(e.name)}</b></span><span class="text-right"><b class="text-yellow-400 text-lg">${e.score}</b><br><span class="text-[10px] text-gray-400">${ds}</span></span></div>`;
+            }).join('');
+        }
+        window.lbReplay = () => { leaderboardModal.classList.add('hidden'); showIntro('mimic'); };
+        window.lbClose = () => { leaderboardModal.classList.add('hidden'); showInstruction(getText('info_mimic_desc')); };
+
+        // ========== 手部模式 ==========
+        function drawHandSkeleton(res) {
+            if (!res.landmarks) return;
+            for (let i = 0; i < res.landmarks.length; i++) {
+                drawingUtils.drawConnectors(res.landmarks[i], HandLandmarker.HAND_CONNECTIONS, { color: i === 0 ? "#22d3ee" : "#f472b6", lineWidth: 4 });
+                drawingUtils.drawLandmarks(res.landmarks[i], { color: "#ffffff", lineWidth: 1, radius: 4 });
+            }
+        }
+        function fingersUp(lm, hd) {
+            const up = [false, false, false, false, false];
+            const tip = [8, 12, 16, 20], pip = [6, 10, 14, 18];
+            for (let i = 0; i < 4; i++) if (lm[tip[i]].y < lm[pip[i]].y - 0.02) up[i + 1] = true;
+            // 拇指：靠手別判斷（偵測用原始未鏡像影像）
+            if (hd === 'Right') { if (lm[4].x < lm[3].x) up[0] = true; }
+            else { if (lm[4].x > lm[3].x) up[0] = true; }
+            return up;
+        }
+        function handedness(res, i) { const h = res.handednesses || res.handedness; return h?.[i]?.[0]?.categoryName || 'Right'; }
+
+        function runHandMode(res) {
+            const hasHand = res.landmarks && res.landmarks.length > 0;
+            if (currentMode === 'handmesh' || currentMode === 'fingers' || currentMode === 'rps') drawHandSkeleton(res);
+
+            if (currentMode === 'fingers') {
+                if (hasHand) {
+                    let total = 0;
+                    res.landmarks.forEach((lm, i) => { total += fingersUp(lm, handedness(res, i)).filter(Boolean).length; });
+                    gameCtx.fillStyle = "#fbbf24"; gameCtx.font = "900 180px Arial"; gameCtx.textAlign = "center"; gameCtx.textBaseline = "middle";
+                    gameCtx.strokeStyle = "rgba(0,0,0,0.6)"; gameCtx.lineWidth = 8;
+                    gameCtx.strokeText(total, gameCanvas.width / 2, gameCanvas.height / 2);
+                    gameCtx.fillText(total, gameCanvas.width / 2, gameCanvas.height / 2);
+                    gameCtx.font = "bold 26px 'Microsoft JhengHei', Arial"; gameCtx.fillStyle = "#fff";
+                    gameCtx.fillText(getText('fingers_label'), gameCanvas.width / 2, gameCanvas.height / 2 + 120);
+                } else gameText(getText('hand_hint'), '#fbbf24');
+            } else if (currentMode === 'rps') {
+                drawRpsUI();
+                if (!hasHand && rpsState === 'idle') gameText(getText('hand_hint'), '#fbbf24');
+            } else if (currentMode === 'draw') {
+                runDraw(res, hasHand);
+            } else { // handmesh
+                if (!hasHand) gameText(getText('hand_hint'), '#fbbf24');
+            }
+        }
+
+        // 剪刀石頭布
+        function classifyGesture(lm, hd) {
+            if (!lm) return null;
+            const up = fingersUp(lm, hd); const c = up.filter(Boolean).length;
+            if (c === 0) return 'rock';
+            if (up[1] && up[2] && !up[3] && !up[4]) return 'scissors';
+            if (c >= 4) return 'paper';
+            return null;
+        }
+        function judgeRps(p, c) {
+            if (p === c) return 'draw';
+            if ((p === 'rock' && c === 'scissors') || (p === 'paper' && c === 'rock') || (p === 'scissors' && c === 'paper')) return 'win';
+            return 'lose';
+        }
+        function startRpsRound() {
+            if (currentMode !== 'rps') return;
+            rpsState = 'counting'; rpsPlayer = null; rpsComputer = null; rpsResultText = ''; rpsCountText = '3';
+            let n = 3; SoundEngine.playBeep();
+            clearInterval(rpsTimer);
+            rpsTimer = setInterval(() => {
+                n--;
+                if (n > 0) { rpsCountText = String(n); SoundEngine.playBeep(); }
+                else { clearInterval(rpsTimer); captureRps(); }
+            }, 800);
+        }
+        function captureRps() {
+            rpsState = 'result';
+            const lm = latestHandResults && latestHandResults.landmarks[0];
+            const hd = latestHandResults ? handedness(latestHandResults, 0) : 'Right';
+            rpsPlayer = classifyGesture(lm, hd);
+            rpsComputer = RPS[Math.floor(Math.random() * 3)];
+            if (!rpsPlayer) { rpsResultText = getText('rps_invalid'); SoundEngine.playFail(); }
+            else {
+                const r = judgeRps(rpsPlayer, rpsComputer);
+                if (r === 'win') { rpsWins++; updateScore(rpsWins); SoundEngine.playSuccess(); rpsResultText = getText('rps_win'); }
+                else if (r === 'lose') { SoundEngine.playFail(); rpsResultText = getText('rps_lose'); }
+                else { SoundEngine.playScore(); rpsResultText = getText('rps_draw'); }
+            }
+            clearTimeout(rpsNextTimer);
+            rpsNextTimer = setTimeout(() => { if (currentMode === 'rps' && !isIntroOpen) startRpsRound(); }, 2600);
+        }
+        function drawRpsUI() {
+            gameCtx.textAlign = "center"; gameCtx.textBaseline = "middle";
+            const cx = gameCanvas.width / 2, cy = gameCanvas.height / 2;
+            if (rpsState === 'counting') {
+                gameCtx.fillStyle = "#fbbf24"; gameCtx.font = "900 160px Arial";
+                gameCtx.strokeStyle = "rgba(0,0,0,0.6)"; gameCtx.lineWidth = 8;
+                gameCtx.strokeText(rpsCountText, cx, cy); gameCtx.fillText(rpsCountText, cx, cy);
+            } else if (rpsState === 'result') {
+                gameCtx.font = "90px Arial";
+                gameCtx.fillStyle = "#fff";
+                gameCtx.fillText(`${getText('rps_you')} ${rpsPlayer ? RPS_EMOJI[rpsPlayer] : '❓'}   ${getText('rps_cpu')} ${RPS_EMOJI[rpsComputer]}`, cx, cy - 40);
+                gameCtx.font = "bold 56px 'Microsoft JhengHei', Arial"; gameCtx.fillStyle = "#fbbf24";
+                gameCtx.fillText(rpsResultText, cx, cy + 60);
+            }
+        }
+
+        // 空中塗鴉
+        function runDraw(res, hasHand) {
+            const W = canvasElement.width, H = canvasElement.height;
+            if (hasHand) {
+                const lm = res.landmarks[0]; const hd = handedness(res, 0);
+                const up = fingersUp(lm, hd); const count = up.filter(Boolean).length;
+                const indexOnly = up[1] && !up[2] && !up[3] && !up[4];
+                const tip = lm[8];
+                if (count === 0) { drawStrokes = []; currentStroke = null; }
+                else if (indexOnly) {
+                    if (!currentStroke) { currentStroke = { color: `hsl(${Math.floor(Math.random() * 360)},90%,60%)`, pts: [] }; drawStrokes.push(currentStroke); }
+                    currentStroke.pts.push({ x: tip.x, y: tip.y });
+                } else currentStroke = null;
+                // 指尖游標（鏡像 context）
+                canvasCtx.beginPath(); canvasCtx.arc(tip.x * W, tip.y * H, 10, 0, Math.PI * 2);
+                canvasCtx.fillStyle = indexOnly ? "#22d3ee" : "rgba(255,255,255,0.5)"; canvasCtx.fill();
+            } else currentStroke = null;
+            // 重畫所有筆畫
+            canvasCtx.lineWidth = 8; canvasCtx.lineCap = "round"; canvasCtx.lineJoin = "round";
+            drawStrokes.forEach(st => {
+                if (st.pts.length < 2) return;
+                canvasCtx.strokeStyle = st.color; canvasCtx.beginPath();
+                canvasCtx.moveTo(st.pts[0].x * W, st.pts[0].y * H);
+                for (let i = 1; i < st.pts.length; i++) canvasCtx.lineTo(st.pts[i].x * W, st.pts[i].y * H);
+                canvasCtx.stroke();
+            });
+            if (!hasHand && drawStrokes.length === 0) gameText(getText('draw_intro'), '#fff');
+        }
+
+        // ========== modal / 模式切換 ==========
+        window.showIntro = (mode) => {
+            introIcon.innerText = MODE_INFO[mode] || '👋';
+            introTitle.innerText = getText('info_' + mode + '_title');
+            introDesc.innerText = getText('info_' + mode + '_desc');
+            introNameWrap.classList.toggle('hidden', mode !== 'mimic');
+            if (mode === 'mimic') { playerNameInput.value = playerName || ''; nameHint.classList.add('hidden'); }
+            introModal.classList.remove('hidden');
+            isIntroOpen = true;
+            SoundEngine.stopBGM();
+        };
+        window.closeIntro = () => {
+            if (currentMode === 'mimic') {
+                const v = playerNameInput.value.trim().slice(0, 12);
+                if (!v) { nameHint.classList.remove('hidden'); return; }
+                playerName = v;
+            }
+            introModal.classList.add('hidden');
+            isIntroOpen = false;
+            if (currentMode === 'mimic') startMimicGame();
+            else if (currentMode === 'rps') { rpsWins = 0; updateScore(0); startRpsRound(); }
+        };
+
+        window.setMode = (mode) => {
+            currentMode = mode;
+            SoundEngine.init();
+            stopMimic(); stopFilterSounds();
+            clearInterval(rpsTimer); clearTimeout(rpsNextTimer); rpsState = 'idle';
+
+            document.querySelectorAll('.mode-btn').forEach(b => b.classList.remove('active'));
+            const span = document.getElementById(MODE_BTN[mode]);
+            if (span) span.closest('.mode-btn')?.classList.add('active');
+
+            // 隱藏所有浮動 UI
+            [dataPanel, scorePanel, timerChip, comboChip, arBar].forEach(el => el.classList.add('hidden'));
+            dataToggleBtn.classList.add('hidden');
+            instructionBox.classList.add('hidden'); bigEmoji.classList.add('hidden');
+            gameCtx.clearRect(0, 0, gameCanvas.width, gameCanvas.height);
+            particles = []; rainDrops = []; bursts = []; drawStrokes = []; currentStroke = null;
+
+            if (mode === 'mesh') dataToggleBtn.classList.remove('hidden');
+            else if (mode === 'filter') { arBar.classList.remove('hidden'); window.setArProp(arProp); showInstruction(getText('instr_filter_intro')); }
+            else if (mode === 'mimic') scorePanel.classList.remove('hidden');
+            else if (mode === 'rps') { scorePanel.classList.remove('hidden'); rpsWins = 0; updateScore(0); }
+            else if (mode === 'draw') showInstruction(getText('draw_intro'));
+
+            if (isHandMode(mode)) ensureHandLandmarker();
+            showIntro(mode);
+        };
+
+        window.toggleDataPanel = () => {
+            if (dataPanel.classList.contains('hidden')) { dataPanel.classList.remove('hidden'); dataToggleBtn.classList.add('hidden'); }
+            else { dataPanel.classList.add('hidden'); dataToggleBtn.classList.remove('hidden'); }
+        };
+
+        function showInstruction(text, flash = false) {
+            instructionBox.innerText = text; instructionBox.classList.remove('hidden');
+            if (flash) {
+                instructionBox.classList.add('scale-110', 'bg-yellow-500', 'text-black');
+                setTimeout(() => instructionBox.classList.remove('scale-110', 'bg-yellow-500', 'text-black'), 300);
+            }
+        }
+
+        window.toggleMute = () => {
+            SoundEngine.muted = !SoundEngine.muted;
+            localStorage.setItem('aifacelab_muted', SoundEngine.muted ? '1' : '0');
+            document.getElementById('mute-icon').innerText = SoundEngine.muted ? '🔇' : '🔊';
+            if (SoundEngine.muted) { SoundEngine.stopBGM(); SoundEngine.stopRainSound(); }
+            else if (mimicRunning) SoundEngine.startBGM();
+        };
+
+        window.takeScreenshot = () => {
+            SoundEngine.playShutter();
+            const flash = document.getElementById('flash-overlay');
+            flash.style.animation = 'none'; void flash.offsetWidth; flash.style.animation = 'flash 0.3s ease-out';
+            const cap = document.createElement('canvas');
+            cap.width = canvasElement.width; cap.height = canvasElement.height;
+            const ctx = cap.getContext('2d');
+            ctx.save(); ctx.translate(cap.width, 0); ctx.scale(-1, 1); ctx.drawImage(canvasElement, 0, 0); ctx.restore();
+            ctx.drawImage(gameCanvas, 0, 0);
+            const link = document.createElement('a');
+            link.download = `ai-face-lab-${Date.now()}.png`; link.href = cap.toDataURL('image/png'); link.click();
+        };
+
+        // ========== 啟動 ==========
+        SoundEngine.muted = localStorage.getItem('aifacelab_muted') === '1';
+        document.getElementById('mute-icon').innerText = SoundEngine.muted ? '🔇' : '🔊';
+        createFaceLandmarker();
+    </script>
+</body>
+</html>
